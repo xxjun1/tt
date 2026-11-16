@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>FELT — 친구들과 홀덤</title>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+:root{--bg:#071b17;--felt:#0d563f;--gold:#e6c77a;--cream:#f4f0e5;--muted:#a9b9b1;--panel:#102923}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#164333,#061410 70%);color:var(--cream);font-family:system-ui,-apple-system,sans-serif;min-height:100vh}
+header{display:flex;justify-content:space-between;align-items:center;padding:18px 20px;border-bottom:1px solid #ffffff18}h1{font-size:20px;letter-spacing:4px;margin:0;color:var(--gold)}.sub{font-size:11px;color:var(--muted);letter-spacing:1px}
+main{max-width:900px;margin:auto;padding:18px}.panel{background:#102923eF;border:1px solid #ffffff20;border-radius:18px;padding:18px;margin:14px 0;box-shadow:0 12px 35px #0005}
+h2{font-size:17px;margin:0 0 12px}.row{display:flex;gap:9px;flex-wrap:wrap;align-items:center}input{min-width:0;flex:1;background:#071b17;border:1px solid #547368;border-radius:11px;color:white;padding:13px;font-size:16px}button{border:0;border-radius:11px;padding:12px 15px;font-weight:750;font-size:14px;background:var(--gold);color:#1d2118;cursor:pointer}button.secondary{background:#29463c;color:white;border:1px solid #668477}button:disabled{opacity:.35;cursor:not-allowed}.hint{font-size:12px;color:var(--muted);line-height:1.5}.hidden{display:none!important}
+#table{background:radial-gradient(ellipse,#14724f,#075039 65%,#063a2b);border:9px solid #4b3021;border-radius:42% / 24%;padding:24px 14px;min-height:310px;box-shadow:inset 0 0 0 2px #d7b46b55,0 12px 30px #0007;text-align:center}
+#seats{display:flex;justify-content:center;gap:8px;flex-wrap:wrap;margin-bottom:16px}.seat{background:#071c16cc;border:1px solid #b9d1c266;border-radius:13px;padding:8px 10px;min-width:105px;font-size:12px}.seat.active{border:2px solid var(--gold)}.seat b{display:block}.cards{display:flex;justify-content:center;gap:6px;flex-wrap:wrap;min-height:65px}.card{width:43px;height:60px;border-radius:7px;background:#f8f5ed;color:#171717;display:grid;place-items:center;font-weight:850;font-size:18px;box-shadow:0 3px 5px #0005}.red{color:#c52b36}.back{background:repeating-linear-gradient(45deg,#173f73,#173f73 5px,#e8e2d2 5px,#e8e2d2 7px);border:3px solid #eee}.stat{color:var(--gold);font-size:13px;margin:10px}.actions{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-top:14px}.actions button{min-width:80px}.small{font-size:11px;color:var(--muted)}#log{max-height:130px;overflow:auto;font-size:12px;color:#c5d3cc;line-height:1.6}.badge{display:inline-block;padding:4px 8px;border-radius:20px;background:#24483b;color:#c9dfd2;font-size:11px}
+@media(max-width:540px){main{padding:10px}#table{border-radius:28px;padding:18px 8px}.panel{padding:14px}.seat{min-width:90px}.card{width:37px;height:54px}}
+</style></head>
+<body>
+<header><div><h1>FELT</h1><div class="sub">PRIVATE TABLE · VIRTUAL CHIPS ONLY</div></div><span class="badge" id="connection">연결 대기</span></header>
+<main>
+<section class="panel" id="lobby">
+<h2>테이블 입장</h2>
+<div class="row"><input id="nickname" maxlength="12" placeholder="닉네임" value="Player"><button id="create">방 만들기</button></div>
+<div class="row" style="margin-top:9px"><input id="roomcode" maxlength="8" placeholder="친구에게 받은 방 코드"><button class="secondary" id="join">코드로 참가</button></div>
+<p class="hint">방을 만든 사람이 호스트입니다. 호스트가 접속을 유지해야 게임이 진행됩니다. 최대 6명 · 가상 칩만 사용합니다.</p>
+<div id="lobbymsg" class="hint"></div>
+</section>
+<section class="panel hidden" id="game">
+<div class="row" style="justify-content:space-between"><div><span class="badge" id="roomlabel"></span><div class="small" id="status">대기 중</div></div><div class="row"><button class="secondary" id="copy">코드 복사</button><button class="secondary" id="leave">나가기</button></div></div>
+<div id="table" style="margin-top:14px">
+<div id="seats"></div>
+<div class="small">COMMUNITY CARDS</div><div class="cards" id="board"></div>
+<div class="stat" id="pot">POT 0</div>
+<div class="small">MY CARDS</div><div class="cards" id="mycards"></div>
+<div class="small" id="handinfo"></div>
+<div class="actions" id="actions"><button id="start">게임 시작</button></div>
+</div>
+<div class="panel" style="margin-top:14px"><b style="font-size:13px">테이블 기록</b><div id="log"></div></div>
+</section>
+</main>
+<script>
+const $=id=>document.getElementById(id), suits=['♠','♥','♦','♣'], ranks='23456789TJQKA';
+let peer=null,host=false,room='',myId='',myName='',hostConn=null,conns={},players=[],game=null,privateCards=[],logLines=[];
+const say=t=>{logLines.unshift(t);$('log').innerHTML=logLines.slice(0,12).map(x=>'• '+x).join('<br>')};
+function msg(t){$('lobbymsg').textContent=t}
+function setConnected(t){$('connection').textContent=t}
+function code(){return Math.random().toString(36).slice(2,8).toUpperCase()}
+function sendToAll(data){Object.values(conns).forEach(c=>{if(c.open)c.send(data)})}
+function publicState(){return {players:players.map(p=>({id:p.id,name:p.name,chips:p.chips,folded:p.folded,bet:p.bet,ready:p.ready})),board:game?.board||[],pot:game?.pot||0,stage:game?.stage||'대기',turn:game?.turn||null,currentBet:game?.currentBet||0,dealer:game?.dealer||0,handNo:game?.handNo||0}}
+function render(){
+ $('lobby').classList.add('hidden');$('game').classList.remove('hidden');$('roomlabel').textContent='ROOM '+room;
+ const s=publicState();$('status').textContent=s.stage+(s.turn?' · 차례: '+(players.find(p=>p.id===s.turn)?.name||''):'');
+ $('seats').innerHTML=s.players.map((p,i)=>`<div class="seat ${p.id===s.turn?'active':''}"><b>${esc(p.name)} ${p.id===myId?'(나)':''}</b><span>${p.chips} chips</span><div>${p.folded?'폴드':p.bet?'베팅 '+p.bet:''}</div></div>`).join('');
+ $('board').innerHTML=s.board.map(cardHtml).join('');$('pot').textContent='POT '+s.pot;
+ $('mycards').innerHTML=privateCards.map(cardHtml).join('');
+ $('handinfo').textContent=game?.result||'';
+ const a=$('actions');a.innerHTML='';
+ if(host && (!game || game.stage==='대기' || game.stage==='종료')){let b=document.createElement('button');b.textContent='게임 시작';b.onclick=startHand;a.append(b)}
+ if(game&&['프리플랍','플랍','턴','리버'].includes(game.stage)&&game.turn===myId&&!players.find(p=>p.id===myId)?.folded){
+  const me=players.find(p=>p.id===myId),toCall=Math.max(0,game.currentBet-(me.bet||0));
+  addAction(a,toCall?'콜 '+toCall:'체크',()=>act('call'));
+  addAction(a,'레이즈 +20',()=>act('raise'));
+  addAction(a,'폴드',()=>act('fold'),'secondary');
+ }
+}
+function addAction(parent,label,fn,cls=''){let b=document.createElement('button');b.textContent=label;if(cls)b.className=cls;b.onclick=fn;parent.append(b)}
+function esc(s){return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function cardHtml(c){let red=c.suit==='♥'||c.suit==='♦';return `<div class="card ${red?'red':''}">${c.rank}${c.suit}</div>`}
+function deck(){let d=[];for(let s of suits)for(let r of ranks)d.push({rank:r,suit:s,v:ranks.indexOf(r)+2});for(let i=d.length-1;i>0;i--){let j=Math.floor(Math.random()*(i+1));[d[i],d[j]]=[d[j],d[i]]}return d}
+function connectPeer(id){return new Promise((resolve,reject)=>{peer=new Peer(id||undefined,{debug:0});peer.on('open',x=>{myId=x;resolve()});peer.on('error',e=>reject(e));peer.on('disconnected',()=>setConnected('연결 끊김'))})}
+async function createRoom(){
+ myName=$('nickname').value.trim()||'Player';host=true;msg('방을 만드는 중입니다…');
+ try{await connectPeer(code());room=myId;players=[{id:myId,name:myName,chips:1000,folded:false,bet:0,ready:true}];conns={};
+ peer.on('connection',c=>{conns[c.peer]=c;c.on('open',()=>{});c.on('data',d=>hostReceive(c.peer,d));c.on('close',()=>{players=players.filter(p=>p.id!==c.peer);delete conns[c.peer];broadcast()})});
+ $('roomcode').value=room;setConnected('호스트 연결됨');say('방이 생성되었습니다. 코드를 친구에게 공유하세요.');render();
+ }catch(e){msg('방 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.')}
+}
+function joinRoom(){
+ const r=$('roomcode').value.trim().toUpperCase();if(!r){msg('방 코드를 입력해 주세요.');return}
+ myName=$('nickname').value.trim()||'Player';host=false;msg('방에 연결하는 중입니다…');
+ connectPeer().then(()=>{room=r;hostConn=peer.connect(r,{reliable:true});hostConn.on('open',()=>{hostConn.send({type:'join',name:myName,id:myId});setConnected('방에 참가함');$('lobby').classList.add('hidden');$('game').classList.remove('hidden');$('roomlabel').textContent='ROOM '+room;msg('');});
+ hostConn.on('data',d=>clientReceive(d));hostConn.on('error',()=>msg('연결에 실패했습니다. 코드가 맞는지 확인해 주세요.'));hostConn.on('close',()=>setConnected('호스트 연결 끊김'));
+ }).catch(()=>msg('연결 서버에 접속하지 못했습니다. 인터넷 연결을 확인해 주세요.'));
+}
+function hostReceive(id,d){
+ if(d.type==='join'){if(players.length>=6){conns[id]?.send({type:'error',text:'방이 가득 찼습니다.'});return}if(!players.some(p=>p.id===id)){players.push({id,name:String(d.name||'Guest').slice(0,12),chips:1000,folded:false,bet:0,ready:true});say(d.name+' 참가');broadcast()}}
+ if(d.type==='act')doAction(id,d.action);
+}
+function clientReceive(d){
+ if(d.type==='error'){alert(d.text);return}
+ if(d.type==='state'){players=d.players;game=d.game;privateCards=d.cards||[];logLines=d.logs||logLines;render();$('log').innerHTML=logLines.slice(0,12).map(x=>'• '+esc(x)).join('<br>')}
+}
+function broadcast(){
+ const state={type:'state',players:players.map(p=>({...p})),game:game?{...game,deck:undefined,holes:undefined}:null,logs:logLines};
+ for(const [id,c] of Object.entries(conns)){if(c.open)c.send({...state,cards:game?.holes?.[id]||[]})}
+ render();
+}
+function startHand(){
+ if(!host||players.length<2){say('친구가 한 명 이상 참가해야 시작할 수 있습니다.');return}
+ let d=deck();players.forEach(p=>{p.folded=false;p.bet=0;p.ready=true});
+ game={deck:d,holes:{},board:[],pot:0,currentBet:0,acted:[],stage:'프리플랍',turn:null,dealer:(game?.dealer??-1)+1,result:'',handNo:(game?.handNo||0)+1};
+ players.forEach(p=>game.holes[p.id]=[d.pop(),d.pop()]);
+ let active=players.filter(p=>p.chips>0);if(active.length<2){game.stage='대기';say('게임 가능한 플레이어가 부족합니다.');return}
+ let order=players.map(p=>p.id);let first=(game.dealer+1)%players.length;game.turn=order[first];
+ privateCards=game.holes[myId]||[];say('핸드 '+game.handNo+' 시작');broadcast();
+}
+function act(action){if(host)doAction(myId,action);else hostConn?.send({type:'act',action})}
+function doAction(id,action){
+ if(!game||game.turn!==id)return;
+ const p=players.find(x=>x.id===id);if(!p||p.folded)return;
+ const owed=Math.max(0,game.currentBet-p.bet);
+ if(action==='fold'){p.folded=true;game.acted.push(id);say(p.name+' 폴드')}
+ else if(action==='call'){let n=Math.min(owed,p.chips);p.chips-=n;p.bet+=n;game.pot+=n;game.acted.push(id);say(p.name+(n?' 콜':' 체크'))}
+ else if(action==='raise'){let n=Math.min(owed+20,p.chips);p.chips-=n;p.bet+=n;game.pot+=n;if(p.bet>game.currentBet){game.currentBet=p.bet;game.acted=[id]}else{game.acted.push(id)}say(p.name+' 레이즈')}
+ const alive=players.filter(x=>!x.folded);
+ if(alive.length===1){alive[0].chips+=game.pot;game.result=alive[0].name+' 승리 (상대 폴드)';game.stage='종료';game.turn=null;broadcast();return}
+ let idx=players.findIndex(x=>x.id===id),next=null;
+ for(let k=1;k<=players.length;k++){let q=players[(idx+k)%players.length];if(!q.folded&&q.chips>0){next=q.id;break}}
+ if(!next || players.filter(x=>!x.folded&&x.chips>0).length<=1){advanceStreet();return}
+ game.turn=next;
+ if(players.filter(x=>!x.folded&&x.chips>0).every(x=>game.acted.includes(x.id)&&x.bet===game.currentBet)){advanceStreet();return}
+ broadcast();
+}
+function advanceStreet(){
+ players.forEach(p=>p.bet=0);game.currentBet=0;game.acted=[];
+ if(game.stage==='프리플랍'){game.deck.pop();game.board.push(game.deck.pop(),game.deck.pop(),game.deck.pop());game.stage='플랍'}
+ else if(game.stage==='플랍'){game.deck.pop();game.board.push(game.deck.pop());game.stage='턴'}
+ else if(game.stage==='턴'){game.deck.pop();game.board.push(game.deck.pop());game.stage='리버'}
+ else {showdown();return}
+ let first=players.findIndex(p=>!p.folded&&p.chips>0);game.turn=first<0?null:players[first].id;
+ if(!game.turn){showdown();return}say(game.stage+' 공개');broadcast();
+}
+function eval5(cs){
+ let vals=cs.map(c=>c.v).sort((a,b)=>b-a),counts={};vals.forEach(v=>counts[v]=(counts[v]||0)+1);
+ let groups=Object.entries(counts).map(([v,n])=>({v:+v,n})).sort((a,b)=>b.n-a.n||b.v-a.v);
+ let flush=cs.every(c=>c.suit===cs[0].suit),uniq=[...new Set(vals)],straight=0;
+ if(uniq.length===5){if(uniq[0]-uniq[4]===4)straight=uniq[0];else if(uniq.join(',')==='14,5,4,3,2')straight=5}
+ if(flush&&straight)return [8,straight];
+ if(groups[0].n===4)return [7,groups[0].v,groups[1].v];
+ if(groups[0].n===3&&groups[1].n===2)return [6,groups[0].v,groups[1].v];
+ if(flush)return [5,...vals];
+ if(straight)return [4,straight];
+ if(groups[0].n===3)return [3,groups[0].v,...groups.slice(1).map(g=>g.v)];
+ if(groups[0].n===2&&groups[1].n===2)return [2,Math.max(groups[0].v,groups[1].v),Math.min(groups[0].v,groups[1].v),groups[2].v];
+ if(groups[0].n===2)return [1,groups[0].v,...groups.slice(1).map(g=>g.v)];
+ return [0,...vals]
+}
+function best(cards){let b=null;for(let a=0;a<cards.length-4;a++)for(let c=a+1;c<cards.length-3;c++)for(let d=c+1;d<cards.length-2;d++)for(let e=d+1;e<cards.length-1;e++)for(let f=e+1;f<cards.length;f++){let x=eval5([cards[a],cards[c],cards[d],cards[e],cards[f]]);if(!b||cmp(x,b)>0)b=x}return b||[0]}
+function cmp(a,b){for(let i=0;i<Math.max(a.length,b.length);i++){if((a[i]||0)!==(b[i]||0))return(a[i]||0)>(b[i]||0)?1:-1}return 0}
+function showdown(){
+ game.stage='쇼다운';game.turn=null;
+ let alive=players.filter(p=>!p.folded),winner=alive[0],score=best([...game.holes[winner.id],...game.board]);
+ for(let p of alive.slice(1)){let s=best([...game.holes[p.id],...game.board]);if(cmp(s,score)>0){winner=p;score=s}}
+ winner.chips+=game.pot;game.result=winner.name+' 승리 · 팟 '+game.pot+'칩';game.stage='종료';
+ say(game.result);broadcast();
+}
+$('create').onclick=createRoom;$('join').onclick=joinRoom;
+$('copy').onclick=()=>{navigator.clipboard?.writeText(room).then(()=>say('방 코드 복사 완료')).catch(()=>alert('방 코드: '+room))};
+$('leave').onclick=()=>{if(host){sendToAll({type:'error',text:'호스트가 방을 종료했습니다.'})}peer?.destroy();peer=null;hostConn=null;conns={};players=[];game=null;privateCards=[];$('game').classList.add('hidden');$('lobby').classList.remove('hidden');setConnected('연결 대기')};
+</script></body></html>
